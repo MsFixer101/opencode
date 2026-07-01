@@ -372,13 +372,25 @@ export namespace ProviderTransform {
     if (
       id.includes("deepseek") ||
       id.includes("minimax") ||
-      id.includes("glm") ||
       id.includes("mistral") ||
       id.includes("kimi") ||
       // TODO: Remove this after models.dev data is fixed to use "kimi-k2.5" instead of "k2p5"
       id.includes("k2p5")
     )
       return {}
+
+    // GLM 5.2+ exposes a graduated reasoning ladder (low/medium/high/max) via reasoning_effort.
+    // Older GLM (<=5.1) only had binary thinking, so there is no effort ladder to offer.
+    // The reasoningEffort key is serialized to reasoning_effort by the openai-compatible SDK,
+    // which is how GLM is reached both via Ollama's /v1 endpoint and z.ai directly.
+    if (id.includes("glm")) {
+      if (id.includes("glm-5.2") || id.includes("glm-5.3") || id.includes("glm-6")) {
+        return Object.fromEntries(
+          ["low", "medium", "high", "max"].map((effort) => [effort, { reasoningEffort: effort }]),
+        )
+      }
+      return {}
+    }
 
     // see: https://docs.x.ai/docs/guides/reasoning#control-how-hard-the-model-thinks
     if (id.includes("grok") && id.includes("grok-3-mini")) {
