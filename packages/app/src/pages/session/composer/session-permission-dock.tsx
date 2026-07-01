@@ -5,6 +5,53 @@ import { DockPrompt } from "@opencode-ai/ui/dock-prompt"
 import { Icon } from "@opencode-ai/ui/icon"
 import { useLanguage } from "@/context/language"
 
+function DiffPreview(props: { diff: string }) {
+  const lines = () =>
+    props.diff
+      .split("\n")
+      .filter((line) => !line.startsWith("--- ") && !line.startsWith("+++ "))
+      .slice(0, 200)
+
+  const lineStyle = (line: string): Record<string, string> => {
+    if (line.startsWith("+"))
+      return {
+        color: "var(--icon-diff-add-base)",
+        "background-color": "color-mix(in srgb, var(--icon-diff-add-base) 10%, transparent)",
+        display: "block",
+      }
+    if (line.startsWith("-"))
+      return {
+        color: "var(--icon-diff-delete-base)",
+        "background-color": "color-mix(in srgb, var(--icon-diff-delete-base) 10%, transparent)",
+        display: "block",
+      }
+    if (line.startsWith("@@"))
+      return { color: "var(--text-subtle-base)", opacity: "0.8", display: "block" }
+    return { display: "block" }
+  }
+
+  return (
+    <pre
+      style={{
+        "max-height": "220px",
+        "overflow-y": "auto",
+        "font-size": "11px",
+        "line-height": "1.4",
+        margin: "0",
+        padding: "6px 8px",
+        "border-radius": "6px",
+        "background-color": "var(--surface-raised-stronger-non-alpha)",
+        "white-space": "pre",
+        "overflow-x": "auto",
+      }}
+    >
+      <For each={lines()}>
+        {(line) => <span style={lineStyle(line)}>{line || " "}</span>}
+      </For>
+    </pre>
+  )
+}
+
 export function SessionPermissionDock(props: {
   request: PermissionRequest
   responding: boolean
@@ -66,6 +113,15 @@ export function SessionPermissionDock(props: {
             <For each={props.request.patterns}>
               {(pattern) => <code class="text-12-regular text-text-base break-all">{pattern}</code>}
             </For>
+          </div>
+        </div>
+      </Show>
+
+      <Show when={typeof props.request.metadata?.diff === "string" && (props.request.metadata.diff as string).length > 0}>
+        <div data-slot="permission-row">
+          <span data-slot="permission-spacer" aria-hidden="true" />
+          <div style={{ width: "100%", "overflow-x": "hidden" }}>
+            <DiffPreview diff={props.request.metadata.diff as string} />
           </div>
         </div>
       </Show>
