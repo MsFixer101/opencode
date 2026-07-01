@@ -345,6 +345,18 @@ export function Session() {
   const command = useCommandDialog()
   command.register(() => [
     {
+      title: "Side question",
+      value: "session.btw",
+      category: "Session",
+      description: "Ask a quick question without affecting history",
+      slash: {
+        name: "btw",
+      },
+      onSelect: (dialog) => {
+        dialog.clear()
+      },
+    },
+    {
       title: session()?.share?.url ? "Copy share link" : "Share session",
       value: "session.share",
       suggested: route.type === "session",

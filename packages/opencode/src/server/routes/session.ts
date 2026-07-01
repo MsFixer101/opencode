@@ -21,6 +21,8 @@ import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Bus } from "../../bus"
 import { NamedError } from "@opencode-ai/util/error"
+import { LLM } from "../../session/llm"
+import { Provider } from "../../provider/provider"
 
 const log = Log.create({ service: "server" })
 
@@ -893,6 +895,63 @@ export const SessionRoutes = lazy(() =>
         const body = c.req.valid("json")
         const msg = await SessionPrompt.command({ ...body, sessionID })
         return c.json(msg)
+      },
+    )
+    .post(
+      "/:sessionID/btw",
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          question: z.string(),
+          providerID: ProviderID.zod,
+          modelID: ModelID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        const model = await Provider.getModel(body.providerID, body.modelID)
+        const history = MessageV2.page({ sessionID, limit: 20 })
+        const messages = await MessageV2.toModelMessages(history.items, model)
+        messages.push({ role: "user" as const, content: body.question })
+
+        return stream(c, async (s) => {
+          const result = await LLM.stream({
+            agent: {
+              name: "btw",
+              mode: "primary" as const,
+              permission: [],
+              options: {},
+            },
+            user: {
+              id: MessageID.ascending(),
+              sessionID,
+              role: "user" as const,
+              time: { created: Date.now() },
+              agent: "btw",
+              model: { providerID: body.providerID, modelID: body.modelID },
+            },
+            system: ["Answer this side-question concisely. You have no tools available."],
+            small: false,
+            tools: {},
+            model,
+            abort: c.req.raw.signal,
+            sessionID,
+            retries: 1,
+            messages,
+          })
+          for await (const event of result.fullStream) {
+            if (event.type === "text-delta") {
+              s.write(event.text)
+            }
+          }
+        })
       },
     )
     .post(

@@ -35,6 +35,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { DialogBtw } from "../dialog-btw"
 import { CONSOLE_MANAGED_ICON, consoleManagedProviderLabel } from "@tui/util/provider-origin"
 
 export type PromptProps = {
@@ -665,6 +666,24 @@ export function Prompt(props: PromptProps) {
     // Capture mode before it gets reset
     const currentMode = store.mode
     const variant = local.model.variant.current()
+
+    // /btw side-question — bypass history
+    if (inputText.startsWith("/btw ")) {
+      const question = inputText.slice(5).trim()
+      if (question) {
+        dialog.replace(() => (
+          <DialogBtw
+            sessionID={sessionID!}
+            question={question}
+            providerID={selectedModel.providerID}
+            modelID={selectedModel.modelID}
+          />
+        ))
+      }
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      return
+    }
 
     if (store.mode === "shell") {
       sdk.client.session.shell({
