@@ -62,6 +62,18 @@ export const EditTool = Tool.define("edit", {
         const existed = await Filesystem.exists(filePath)
         contentNew = params.newString
         diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
+        const filediff: Snapshot.FileDiff = {
+          file: filePath,
+          before: contentOld,
+          after: contentNew,
+          additions: 0,
+          deletions: 0,
+          status: existed ? "modified" : "added",
+        }
+        for (const change of diffLines(contentOld, contentNew)) {
+          if (change.added) filediff.additions += change.count || 0
+          if (change.removed) filediff.deletions += change.count || 0
+        }
         await ctx.ask({
           permission: "edit",
           patterns: [path.relative(Instance.worktree, filePath)],
@@ -69,6 +81,7 @@ export const EditTool = Tool.define("edit", {
           metadata: {
             filepath: filePath,
             diff,
+            filediff,
           },
         })
         await Filesystem.write(filePath, params.newString)
@@ -97,6 +110,18 @@ export const EditTool = Tool.define("edit", {
       diff = trimDiff(
         createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
       )
+      const filediff: Snapshot.FileDiff = {
+        file: filePath,
+        before: contentOld,
+        after: contentNew,
+        additions: 0,
+        deletions: 0,
+        status: "modified",
+      }
+      for (const change of diffLines(contentOld, contentNew)) {
+        if (change.added) filediff.additions += change.count || 0
+        if (change.removed) filediff.deletions += change.count || 0
+      }
       await ctx.ask({
         permission: "edit",
         patterns: [path.relative(Instance.worktree, filePath)],
@@ -104,6 +129,7 @@ export const EditTool = Tool.define("edit", {
         metadata: {
           filepath: filePath,
           diff,
+          filediff,
         },
       })
 
