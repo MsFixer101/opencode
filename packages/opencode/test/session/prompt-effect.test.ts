@@ -1,7 +1,10 @@
 import { NodeFileSystem } from "@effect/platform-node"
-import { expect, spyOn } from "bun:test"
+import { afterAll, expect, spyOn } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import fs from "fs"
+import os from "os"
 import path from "path"
+import { pathToFileURL } from "url"
 import z from "zod"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
@@ -1238,4 +1241,200 @@ unix(
       ),
     ),
   30_000,
+)
+
+// session.stop: plugins can block the end of a turn
+
+const stops = path.join(os.tmpdir(), `opencode-session-stop-${process.pid}`)
+fs.mkdirSync(stops, { recursive: true })
+afterAll(() => fs.rmSync(stops, { recursive: true, force: true }))
+function stopPlugin(name: string, body: string) {
+  const file = path.join(stops, `${name}.ts`)
+  const hook = `export default async () => ({\n  "session.stop": async (input, output) => {\n${body}\n  },\n})\n`
+  fs.writeFileSync(file, hook)
+  return (url: string) => ({ ...providerCfg(url), plugin: [pathToFileURL(file).href] })
+}
+// Each session.stop call appends the reviewed message id to this file.
+const calls = (name: string) => path.join(stops, `${name}.calls`)
+const record = (name: string) =>
+  `    require("fs").appendFileSync(${JSON.stringify(calls(name))}, input.messageID + "\\n")`
+const called = (name: string) =>
+  fs.existsSync(calls(name)) ? fs.readFileSync(calls(name), "utf8").trim().split("\n") : []
+
+const stopTurn = Effect.fn("test.stopTurn")(function* () {
+  const prompt = yield* SessionPrompt.Service
+  const sessions = yield* Session.Service
+  const session = yield* sessions.create({
+    title: "Stop hook",
+    permission: [{ permission: "*", pattern: "*", action: "allow" }],
+  })
+  yield* prompt.prompt({
+    sessionID: session.id,
+    agent: "build",
+    noReply: true,
+    parts: [{ type: "text", text: "hello" }],
+  })
+  return { prompt, sessions, session }
+})
+
+it.live("session.stop block re-runs the turn once with the reason", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, sessions, session } = yield* stopTurn()
+      yield* llm.text("first answer")
+      yield* llm.text("fixed answer")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      expect(yield* llm.calls).toBe(2)
+      expect(result.parts.some((part) => part.type === "text" && part.text === "fixed answer")).toBe(true)
+      const users = (yield* sessions.messages({ sessionID: session.id })).filter((m) => m.info.role === "user")
+      expect(users).toHaveLength(2)
+      const part = users[1].parts[0]
+      expect(part.type === "text" && part.synthetic && part.text).toBe("REVIEW: say what you tested")
+    }),
+    {
+      git: true,
+      config: stopPlugin(
+        "once",
+        `    if (input.active) return\n    output.block = true\n    output.reason = "REVIEW: say what you tested"`,
+      ),
+    },
+  ),
+)
+
+it.live("session.stop stops after 2 blocks even if the plugin ignores active", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, session } = yield* stopTurn()
+      yield* llm.text("one")
+      yield* llm.text("two")
+      yield* llm.text("three")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      expect(yield* llm.calls).toBe(3)
+      expect(result.parts.some((part) => part.type === "text" && part.text === "three")).toBe(true)
+    }),
+    { git: true, config: stopPlugin("always", `    output.block = true\n    output.reason = "again"`) },
+  ),
+)
+
+it.live("session.stop that throws lets the turn end", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, session } = yield* stopTurn()
+      yield* llm.text("only answer")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      expect(yield* llm.calls).toBe(1)
+      expect(result.parts.some((part) => part.type === "text" && part.text === "only answer")).toBe(true)
+    }),
+    { git: true, config: stopPlugin("throws", `    throw new Error("reviewer down")`) },
+  ),
+)
+
+it.live("session.stop with block but no reason does not block", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, session } = yield* stopTurn()
+      yield* llm.text("only answer")
+
+      yield* prompt.loop({ sessionID: session.id })
+      expect(yield* llm.calls).toBe(1)
+    }),
+    { git: true, config: stopPlugin("empty", `    output.block = true`) },
+  ),
+)
+
+it.live(
+  "session.stop: a message sent while the hook runs is still answered",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const { prompt, sessions, session } = yield* stopTurn()
+        yield* llm.text("answer one")
+        yield* llm.text("answer two")
+
+        const first = yield* prompt.loop({ sessionID: session.id }).pipe(Effect.forkChild)
+        yield* Effect.sleep("700 millis")
+        const second = yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "second question" }],
+        })
+        yield* Fiber.await(first)
+        expect(yield* llm.calls).toBe(2)
+        expect(second.parts.some((part) => part.type === "text" && part.text === "answer two")).toBe(true)
+        const roles = (yield* sessions.messages({ sessionID: session.id })).map((m) => m.info.role)
+        expect(roles).toEqual(["user", "assistant", "user", "assistant"])
+      }),
+      { git: true, config: stopPlugin("slow", `    await new Promise((done) => setTimeout(done, 1500))`) },
+    ),
+  30_000,
+)
+
+it.live("session.stop re-run keeps the user's system prompt", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Stop hook system",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        system: "CUSTOM-SYSTEM-MARKER",
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.text("one")
+      yield* llm.text("two")
+
+      yield* prompt.loop({ sessionID: session.id })
+      const inputs = yield* llm.inputs
+      expect(inputs).toHaveLength(2)
+      expect(inputs.map((body) => JSON.stringify(body).includes("CUSTOM-SYSTEM-MARKER"))).toEqual([true, true])
+    }),
+    {
+      git: true,
+      config: stopPlugin(
+        "system",
+        `    if (input.active) return\n    output.block = true\n    output.reason = "REVIEW"`,
+      ),
+    },
+  ),
+)
+
+it.live("session.stop with a non-string reason lets the turn end", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, session } = yield* stopTurn()
+      yield* llm.text("only answer")
+
+      const exit = yield* prompt.loop({ sessionID: session.id }).pipe(Effect.exit)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(yield* llm.calls).toBe(1)
+    }),
+    { git: true, config: stopPlugin("nonstring", `    output.block = true\n    output.reason = undefined`) },
+  ),
+)
+
+it.live("session.stop does not review a compaction summary", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const { prompt, session } = yield* stopTurn()
+      const compaction = yield* SessionCompaction.Service
+      yield* llm.text("first answer")
+      yield* prompt.loop({ sessionID: session.id })
+      expect(called("summary")).toHaveLength(1)
+
+      yield* compaction.create({ sessionID: session.id, agent: "build", model: ref, auto: false })
+      yield* llm.text("SUMMARY of the conversation")
+      yield* prompt.loop({ sessionID: session.id })
+      expect(yield* llm.calls).toBe(2)
+      expect(called("summary")).toHaveLength(1)
+    }),
+    { git: true, config: stopPlugin("summary", record("summary")) },
+  ),
 )

@@ -1339,6 +1339,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const ctx = yield* InstanceState.context
           let structured: unknown | undefined
           let step = 0
+          let blocks = 0
           const session = yield* sessions.get(sessionID)
 
           while (true) {
@@ -1376,6 +1377,61 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               !hasToolCalls &&
               lastUser.id < lastAssistant.id
             ) {
+              // session.stop: plugins may block the end of a turn (Claude Code's Stop hook contract).
+              // A block adds the reason as a synthetic user message and runs the loop again.
+              // `active` is true once a block has happened in this run; at most 2 blocks, then it stops anyway.
+              // Fail-open: a throwing hook is logged and the turn ends normally.
+              // Compaction summaries are not turns, so they are not reviewed.
+              if (lastAssistant.summary) {
+                log.info("exiting loop", { sessionID })
+                break
+              }
+              const stop = yield* plugin
+                .trigger(
+                  "session.stop",
+                  { sessionID, messageID: lastAssistant.id, parentID: session.parentID, active: blocks > 0 },
+                  { block: false, reason: "" },
+                )
+                .pipe(
+                  Effect.catchCause((cause) => {
+                    log.error("session.stop hook failed", { sessionID, cause: Cause.pretty(cause) })
+                    return Effect.succeed({ block: false, reason: "" })
+                  }),
+                )
+              // A hook can take a while (a model review). A message sent meanwhile must still be answered:
+              // re-read, and if a newer user message is there, run the loop for it instead of ending or blocking.
+              const after = yield* MessageV2.filterCompactedEffect(sessionID)
+              // The new message is a new turn, so its reply is reviewed afresh (blocks back to 0).
+              if (after.some((m) => m.info.role === "user" && m.info.id > lastAssistant.id)) {
+                blocks = 0
+                continue
+              }
+              if (stop.block === true && typeof stop.reason === "string" && stop.reason.trim() && blocks < 2) {
+                blocks++
+                log.info("session.stop blocked", { sessionID, blocks })
+                const reminder: MessageV2.User = {
+                  id: MessageID.ascending(),
+                  sessionID,
+                  role: "user",
+                  time: { created: Date.now() },
+                  agent: lastUser.agent,
+                  model: lastUser.model,
+                  format: lastUser.format,
+                  tools: lastUser.tools,
+                  system: lastUser.system,
+                  variant: lastUser.variant,
+                }
+                yield* sessions.updateMessage(reminder)
+                yield* sessions.updatePart({
+                  id: PartID.ascending(),
+                  messageID: reminder.id,
+                  sessionID,
+                  type: "text",
+                  text: stop.reason,
+                  synthetic: true,
+                } satisfies MessageV2.TextPart)
+                continue
+              }
               log.info("exiting loop", { sessionID })
               break
             }

@@ -265,6 +265,22 @@ export interface Hooks {
     input: { sessionID: string },
     output: { context: string[]; prompt?: string },
   ) => Promise<void>
+  /**
+   * Called when a turn is about to end (the assistant gave a final answer with no tool calls).
+   * Set `output.block = true` and a `reason` to keep the turn going: the reason is added as a
+   * synthetic user message and the model runs again. Same contract as Claude Code's Stop hook.
+   *
+   * - `active`: true when a session.stop block already happened in this run (Claude Code's
+   *   `stop_hook_active`). Return without blocking when it is set, or the turn will loop.
+   * - `parentID`: set for subagent sessions.
+   * - At most 2 blocks per run; after that the turn ends. A throwing hook never blocks.
+   * - A user message that arrives while the hook runs is answered instead (no block). Use `block`
+   *   and `reason` to continue a turn; writing a user message from this hook bypasses the 2-block cap.
+   */
+  "session.stop"?: (
+    input: { sessionID: string; messageID: string; parentID?: string; active: boolean },
+    output: { block: boolean; reason: string },
+  ) => Promise<void>
   "experimental.text.complete"?: (
     input: { sessionID: string; messageID: string; partID: string },
     output: { text: string },
