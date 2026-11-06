@@ -1,6 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "ollama/glm-5.2:cloud",
   "provider": {
     "opencode": {
       "options": {},
@@ -15,8 +14,6 @@
         "huihui_ai/qwen3.5-abliterated:27b": { "name": "Qwen 3.5 Abliterated 27B (local)", "tool_call": true },
         "gemma4:12b": { "name": "Gemma 4 12B (local)", "tool_call": true },
         "qwen3.5:cloud": { "name": "Qwen 3.5 (cloud)", "tool_call": true },
-        "glm-5.1:cloud": { "name": "GLM 5.1 (cloud)", "tool_call": true },
-        "glm-5.2:cloud": { "name": "GLM 5.2 (cloud, 976K ctx)", "tool_call": true },
         "gemma4:31b-cloud": { "name": "Gemma 4 31B (cloud)", "tool_call": true },
         "nemotron-3-nano:30b-cloud": { "name": "Nemotron 3 Nano 30B (cloud)", "tool_call": true },
         "deepseek-v4-pro:cloud": { "name": "DeepSeek V4 Pro (cloud, 1M ctx)", "tool_call": true },
